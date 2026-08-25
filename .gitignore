@@ -1,0 +1,23 @@
+# Local spec, not published
+plan.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Recorded traffic
+*.db
+*.db-wal
+*.db-shm
