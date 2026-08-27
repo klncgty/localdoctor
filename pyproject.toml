@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,9 @@ name = "localdoctor"
 version = "0.1.0"
 description = "A diagnostic proxy that catches silent inference failures in local LLM servers, with evidence"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Çağatay Kılınç" }]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

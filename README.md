@@ -200,6 +200,10 @@ with any OpenAI-compatible server — llama.cpp, vLLM, LM Studio — through
 `/v1/chat/completions` and `/v1/completions`. Everything else is dumb
 passthrough.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Development
 
 ```bash
