@@ -64,15 +64,81 @@ You can also check your setup without waiting for traffic:
 localdoctor doctor
 ```
 
+## Look at what was recorded
+
+The live terminal only shows what crosses the confidence threshold. Everything
+else — including the `low` confidence guesses it deliberately withholds — is in
+the database.
+
+```bash
+localdoctor log                 # requests that produced a finding
+localdoctor log --all           # healthy ones too
+localdoctor log --rule R001     # only this rule
+localdoctor show 9HG3D0Y6       # everything about one request
+```
+
+```
+id        time      model       endpoint    tokens  ms  findings
+8Y3CW1ZQ  14:53:00  gemma3:4b   /api/chat    8 → 9   0  R001 low
+9HG3D0Y6  14:53:00  qwen3.5:9b  /api/chat   8 → 24   0  R003↳R004  R004 high
+JQTDS9MC  14:53:00  qwen3.5:9b  /api/chat  256 → 9   1  R001 high  R002 certain
+```
+
+`R003↳R004` means R003 fired but was suppressed by R004 as the root cause.
+`R001 low` was recorded and never printed live.
+
+There is a dashboard too. It carries its own CSS and JS and loads nothing from
+anywhere else:
+
+```bash
+localdoctor dashboard           # http://127.0.0.1:11436
+```
+
+## Replay
+
+Because every request is stored with its raw body, "does my agent still work if
+I switch models?" becomes a command:
+
+```bash
+localdoctor replay JQTDS9MC -m gemma3:4b -m llama3.2:3b
+```
+
+```
+replay  JQTDS9MC   /api/chat   recorded on qwen3.5:9b
+
+model                  in → out  finish  ms  output  vs recorded  findings
+qwen3.5:9b (recorded)   256 → 9  length   1   40 ch            —  R001 high  R002 certain
+gemma3:4b               256 → 9  length   0   39 ch     86% same  R001 high  R002 certain
+llama3.2:3b             256 → 9  length   0   41 ch     84% same  R001 high  R002 certain
+
+  --- recorded qwen3.5:9b
+  +++ gemma3:4b
+  @@ -1 +1 @@
+  -This is a normal answer from qwen3.5:9b.
+  +This is a normal answer from gemma3:4b.
+```
+
+Every model is diagnosed independently, so a finding that follows the request
+rather than the model — as R001 does above — is visible as such.
+
+Replay changes only the `model` field of the recorded request. It never
+modifies the stored record and never writes its results to the database.
+
 ### Options
 
 ```
-localdoctor serve [--port 11435] [--upstream http://localhost:11434]
-                  [--host 127.0.0.1] [--quiet] [--record] [--db PATH]
+localdoctor serve     [--port 11435] [--upstream http://localhost:11434]
+                      [--host 127.0.0.1] [--quiet] [--record] [--db PATH]
+localdoctor log       [--limit 20] [--model X] [--rule R001] [--all] [--db PATH]
+localdoctor show      <id> [--full] [--db PATH]
+localdoctor dashboard [--port 11436] [--host 127.0.0.1] [--db PATH]
+localdoctor replay    <id> [--model X ...] [--upstream URL] [--no-diff] [--db PATH]
+localdoctor doctor    [--upstream http://localhost:11434]
 ```
 
 `--quiet` prints nothing but still records everything. `--record` additionally
-stores chunk-level timing.
+stores chunk-level timing. Ids may be given in full or as any unique part —
+the tail printed by `log` is enough.
 
 ## What it detects
 
@@ -116,7 +182,7 @@ any diagnosis built on the estimate at `medium`.
 
 Every request is recorded, including the ones that produced no diagnosis, so
 "why didn't it warn me?" always has an answer. Raw request bodies and headers
-are stored so recorded traffic can be replayed later.
+are stored, which is what makes `localdoctor replay` possible.
 
 Default location: `~/.localdoctor/localdoctor.db` (SQLite).
 

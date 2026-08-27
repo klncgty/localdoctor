@@ -16,8 +16,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 MODEL_CONTEXT_LENGTH = 262144
 DEFAULT_NUM_CTX = 4096
-LONG_THINKING = "Dusunuyorum. " * 400
-NORMAL_CONTENT = "Merhaba, bu normal bir cevap."
+LONG_THINKING = "Let me think about this. " * 400
+NORMAL_CONTENT = "This is a normal answer from {model}."
 
 app = FastAPI()
 
@@ -49,7 +49,7 @@ def plan_for(scenario: str, body: dict[str, Any]) -> dict[str, Any]:
     realistic = max(8, prompt_chars(body) // 4)
 
     plan = {
-        "content": NORMAL_CONTENT,
+        "content": NORMAL_CONTENT.format(model=body.get("model", "fake:latest")),
         "thinking": "",
         "done_reason": "stop",
         "prompt_eval_count": min(realistic, num_ctx),
@@ -70,6 +70,11 @@ def plan_for(scenario: str, body: dict[str, Any]) -> dict[str, Any]:
     elif scenario == "near_limit_healthy":
         # Near the limit but not pinned: no signal may fire.
         plan["prompt_eval_count"] = max(1, num_ctx - 50)
+    elif scenario == "cached_prompt":
+        # A KV-cache hit: the server reports only the newly evaluated tokens,
+        # so the count lands below the lower bound of what was sent. This is
+        # exactly why S3 on its own is a heuristic, not evidence.
+        plan["prompt_eval_count"] = 8
     elif scenario == "empty":
         plan["content"] = "   \n  "
         plan["eval_count"] = 7
@@ -83,7 +88,7 @@ def plan_for(scenario: str, body: dict[str, Any]) -> dict[str, Any]:
         plan["done_reason"] = "length"
         plan["eval_count"] = num_predict
     elif scenario == "reasoning_healthy":
-        plan["thinking"] = "Kisa bir dusunme."
+        plan["thinking"] = "A short thought."
         plan["content"] = NORMAL_CONTENT
     elif scenario == "truncated_and_empty":
         # R001 + R003 together: exercises suppression.

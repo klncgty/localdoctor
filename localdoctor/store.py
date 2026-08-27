@@ -151,9 +151,96 @@ class Store:
 
         await asyncio.to_thread(_write)
 
-    # --- reads (phase 2 grows from here; phase 1 uses it only in tests) ---
+    # --- reads ------------------------------------------------------------
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
             self._conn.row_factory = sqlite3.Row
             return self._conn.execute(sql, params).fetchall()
+
+    def recent(
+        self,
+        limit: int = 20,
+        model: str | None = None,
+        rule: str | None = None,
+        endpoint: str | None = None,
+        only_findings: bool = True,
+    ) -> list[sqlite3.Row]:
+        """Most recent requests, newest first."""
+        clauses: list[str] = []
+        params: list = []
+        if model:
+            clauses.append("r.model LIKE ?")
+            params.append(f"%{model}%")
+        if endpoint:
+            clauses.append("r.endpoint = ?")
+            params.append(endpoint)
+        if rule:
+            clauses.append("EXISTS (SELECT 1 FROM diagnoses d WHERE d.request_id = r.id AND d.rule_id = ?)")
+            params.append(rule.upper())
+        elif only_findings:
+            clauses.append("EXISTS (SELECT 1 FROM diagnoses d WHERE d.request_id = r.id)")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        return self.query(
+            f"""SELECT r.*,
+                       (SELECT COUNT(*) FROM diagnoses d WHERE d.request_id = r.id) AS diagnosis_count
+                FROM requests r {where}
+                ORDER BY r.ts DESC, r.id DESC
+                LIMIT ?""",
+            tuple(params),
+        )
+
+    def find_request(self, ident: str) -> sqlite3.Row | None:
+        """Look a request up by full id, or by a unique prefix or suffix.
+
+        Ids are ULID-like: the first half is a timestamp, so short prefixes
+        collide. `localdoctor log` therefore prints the tail, and a tail lookup
+        is what usually lands here.
+        """
+        ident = ident.strip().upper()
+        if not ident:
+            return None
+        exact = self.query("SELECT * FROM requests WHERE id = ?", (ident,))
+        if exact:
+            return exact[0]
+        for pattern in (f"%{ident}", f"{ident}%"):
+            rows = self.query("SELECT * FROM requests WHERE id LIKE ?", (pattern,))
+            if len(rows) == 1:
+                return rows[0]
+            if len(rows) > 1:
+                raise AmbiguousId(ident, [row["id"] for row in rows])
+        return None
+
+    def diagnoses_for(self, request_id: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM diagnoses WHERE request_id = ? ORDER BY id", (request_id,)
+        )
+
+    def chunks_for(self, request_id: str) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT * FROM chunks WHERE request_id = ? ORDER BY seq", (request_id,)
+        )
+
+    def stats(self) -> dict:
+        """Counts for the dashboard header."""
+        total = self.query("SELECT COUNT(*) AS n FROM requests")[0]["n"]
+        flagged = self.query(
+            "SELECT COUNT(DISTINCT request_id) AS n FROM diagnoses WHERE suppressed_by IS NULL"
+        )[0]["n"]
+        by_rule = self.query(
+            """SELECT rule_id, confidence, COUNT(*) AS n FROM diagnoses
+               GROUP BY rule_id, confidence ORDER BY rule_id, confidence"""
+        )
+        return {
+            "total_requests": total,
+            "flagged_requests": flagged,
+            "by_rule": [dict(row) for row in by_rule],
+        }
+
+
+class AmbiguousId(LookupError):
+    def __init__(self, ident: str, matches: list[str]) -> None:
+        super().__init__(f"{ident} matches {len(matches)} requests")
+        self.ident = ident
+        self.matches = matches

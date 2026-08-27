@@ -90,47 +90,9 @@ class Collector:
         self.store = store
         self.record_chunks = record_chunks
 
-    def build_record(self, capture: Capture) -> RequestRecord:
-        request_json = _safe_json(capture.request_body)
-        raw_response = bytes(capture.buffer)
-        decoded = normalize.maybe_decompress(
-            raw_response, capture.response_headers.get("content-encoding")
-        )
-        parsed = normalize.parse_response(capture.endpoint, decoded, capture.stream)
-        usage = normalize.normalize(request_json, parsed.meta, capture.endpoint)
-
-        return RequestRecord(
-            id=capture.id,
-            ts=capture.ts,
-            endpoint=capture.endpoint,
-            request_body=capture.request_body,
-            request_headers=capture.request_headers,
-            stream=capture.stream,
-            model=usage.model,
-            response_body=raw_response or None,
-            status_code=capture.status_code,
-            ttft_ms=capture.ttft_ms,
-            total_ms=capture.total_ms,
-            chunk_count=capture.chunk_count,
-            chunks=capture.chunks,
-            usage=usage,
-            request_json=request_json,
-            output_text=parsed.content,
-            thinking_text=parsed.thinking,
-            prompt_text=normalize.extract_prompt_text(request_json, capture.endpoint),
-            upstream_error=capture.upstream_error,
-        )
-
     async def analyze(self, capture: Capture) -> RequestRecord:
-        record = self.build_record(capture)
-        record.model_facts = await self.model_info.get(record.model)
-
-        # Resolve the window BEFORE recording this request's own token count,
-        # otherwise the request would become its own observed ceiling and S1
-        # would fire on every single call.
-        record.num_ctx, record.num_ctx_source = self.model_info.resolve_num_ctx(
-            record.usage.num_ctx_requested, record.model, record.model_facts
-        )
+        record = build_record(capture)
+        await enrich(record, self.model_info)
 
         result = EngineResult()
         if record.status_code == 200 and not capture.capture_truncated:
@@ -140,6 +102,53 @@ class Collector:
         self.model_info.note_observation(record.model, record.usage.prompt_tokens)
         await self.store.awrite(record, result.all, self.record_chunks)
         return record
+
+
+def build_record(capture: Capture) -> RequestRecord:
+    """Turn a finished capture into a record. Depends on nothing but the capture."""
+    request_json = _safe_json(capture.request_body)
+    raw_response = bytes(capture.buffer)
+    decoded = normalize.maybe_decompress(
+        raw_response, capture.response_headers.get("content-encoding")
+    )
+    parsed = normalize.parse_response(capture.endpoint, decoded, capture.stream)
+    usage = normalize.normalize(request_json, parsed.meta, capture.endpoint)
+
+    return RequestRecord(
+        id=capture.id,
+        ts=capture.ts,
+        endpoint=capture.endpoint,
+        request_body=capture.request_body,
+        request_headers=capture.request_headers,
+        stream=capture.stream,
+        model=usage.model,
+        response_body=raw_response or None,
+        status_code=capture.status_code,
+        ttft_ms=capture.ttft_ms,
+        total_ms=capture.total_ms,
+        chunk_count=capture.chunk_count,
+        chunks=capture.chunks,
+        usage=usage,
+        request_json=request_json,
+        output_text=parsed.content,
+        thinking_text=parsed.thinking,
+        prompt_text=normalize.extract_prompt_text(request_json, capture.endpoint),
+        upstream_error=capture.upstream_error,
+    )
+
+
+async def enrich(record: RequestRecord, model_info: ModelInfo) -> RequestRecord:
+    """Attach model facts and resolve the effective context window.
+
+    The window is resolved BEFORE this request's own token count is recorded as
+    an observation, otherwise a request would become its own observed ceiling
+    and S1 would fire on every single call.
+    """
+    record.model_facts = await model_info.get(record.model)
+    record.num_ctx, record.num_ctx_source = model_info.resolve_num_ctx(
+        record.usage.num_ctx_requested, record.model, record.model_facts
+    )
+    return record
 
 
 def _safe_json(raw: bytes) -> dict:

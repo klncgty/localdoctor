@@ -42,7 +42,7 @@ async def test_chunks_arrive_in_order(stack):
 
     objects = [json.loads(line) for line in raw.splitlines() if line.strip()]
     text = "".join(obj.get("message", {}).get("content", "") for obj in objects)
-    assert text == "Merhaba, bu normal bir cevap." or text  # order preserved
+    assert text == "This is a normal answer from fake:latest."  # order preserved
     assert objects[-1]["done"] is True
     assert all(obj.get("done") is False for obj in objects[:-1])
 

@@ -13,12 +13,16 @@ from rich.table import Table
 from rich.text import Text
 
 from localdoctor import __version__
+from localdoctor.dashboard import create_dashboard_app
+from localdoctor.logview import render_log, render_show
 from localdoctor.models import ModelFacts, RequestRecord, new_id, now_iso
 from localdoctor.modelinfo import ModelInfo
 from localdoctor.proxy import Settings, create_app
+from localdoctor.replay import render_replay
+from localdoctor.replay import replay as run_replay
 from localdoctor.rules.base import fmt_int
 from localdoctor.rules.r002_underuse import R002
-from localdoctor.store import DEFAULT_DB
+from localdoctor.store import DEFAULT_DB, AmbiguousId, Store
 
 app = typer.Typer(
     add_completion=False,
@@ -50,6 +54,116 @@ def serve(
         )
         console.print()
     uvicorn.run(create_app(settings, console=console), host=host, port=port, log_level="warning")
+
+
+def _open_store(db: Path) -> Store:
+    """Open an existing database, or explain that there is nothing to read yet."""
+    path = Path(db).expanduser()
+    if not path.exists():
+        console.print(Text(f"no database at {path}", style="yellow"))
+        console.print(Text("run `localdoctor serve` and send some traffic first", style="dim"))
+        raise typer.Exit(1)
+    return Store(path)
+
+
+@app.command()
+def log(
+    limit: int = typer.Option(20, "--limit", "-n", help="How many requests to list."),
+    model: str = typer.Option(None, help="Only requests whose model matches."),
+    rule: str = typer.Option(None, help="Only requests that fired this rule, e.g. R001."),
+    endpoint: str = typer.Option(None, help="Only this endpoint."),
+    show_all: bool = typer.Option(False, "--all", help="Include healthy requests too."),
+    db: Path = typer.Option(DEFAULT_DB, help="SQLite database path."),
+) -> None:
+    """List recorded requests, including the low-confidence guesses never printed live."""
+    store = _open_store(db)
+    try:
+        rows = store.recent(
+            limit=limit, model=model, rule=rule, endpoint=endpoint, only_findings=not show_all
+        )
+        render_log(console, rows, store)
+    finally:
+        store.close()
+
+
+@app.command()
+def show(
+    ident: str = typer.Argument(..., help="Request id, or a unique part of one."),
+    full: bool = typer.Option(False, "--full", help="Print bodies in full, not a preview."),
+    db: Path = typer.Option(DEFAULT_DB, help="SQLite database path."),
+) -> None:
+    """Everything recorded about a single request."""
+    store = _open_store(db)
+    try:
+        row = _lookup(store, ident)
+        render_show(console, row, store.diagnoses_for(row["id"]), full)
+    finally:
+        store.close()
+
+
+@app.command()
+def dashboard(
+    port: int = typer.Option(11436, help="Port the dashboard listens on."),
+    host: str = typer.Option("127.0.0.1", help="Interface to bind. Local by default."),
+    db: Path = typer.Option(DEFAULT_DB, help="SQLite database path."),
+) -> None:
+    """Serve the embedded dashboard. Nothing is loaded from outside this machine."""
+    store = _open_store(db)
+    console.print(Text(f"localdoctor dashboard  http://{host}:{port}", style="cyan"))
+    console.print(Text(f"  reading {Path(db).expanduser()}", style="dim"))
+    console.print()
+    try:
+        uvicorn.run(create_dashboard_app(store), host=host, port=port, log_level="warning")
+    finally:
+        store.close()
+
+
+@app.command()
+def replay(
+    ident: str = typer.Argument(..., help="Request id, or a unique part of one."),
+    model: list[str] = typer.Option(
+        None, "--model", "-m", help="Model to replay against. Repeat for several."
+    ),
+    upstream: str = typer.Option("http://localhost:11434", help="Server to replay against."),
+    diff: bool = typer.Option(True, "--diff/--no-diff", help="Show the output diff."),
+    db: Path = typer.Option(DEFAULT_DB, help="SQLite database path."),
+) -> None:
+    """Send a recorded request to other models and diff what comes back.
+
+    The stored record is never modified and replay results are not written to
+    the database. Only the model field of the request is changed.
+    """
+    store = _open_store(db)
+    try:
+        row = _lookup(store, ident)
+        if not row["request_body"]:
+            console.print(Text("this request has no stored body to replay", style="yellow"))
+            raise typer.Exit(1)
+        models = list(model or [])
+        if not models:
+            console.print(
+                Text("no --model given; replaying against the recorded model", style="dim")
+            )
+            if row["model"]:
+                models = [row["model"]]
+        run = asyncio.run(run_replay(row, models, upstream))
+        render_replay(console, run, show_diff=diff)
+    finally:
+        store.close()
+
+
+def _lookup(store: Store, ident: str):
+    try:
+        row = store.find_request(ident)
+    except AmbiguousId as exc:
+        console.print(Text(f"`{ident}` matches {len(exc.matches)} requests:", style="yellow"))
+        for match in exc.matches[:10]:
+            console.print(Text(f"  {match}", style="dim"))
+        raise typer.Exit(1) from None
+    if row is None:
+        console.print(Text(f"no request matching `{ident}`", style="yellow"))
+        raise typer.Exit(1)
+    return row
 
 
 @app.command()

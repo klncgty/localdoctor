@@ -37,7 +37,7 @@ class R003:
         }
         fix = (
             "The chat template or stop-token configuration may not match what the "
-            "model generated. Inspect the raw response with `localdoctor log`."
+            "model generated. Inspect the raw response with `localdoctor show <id>`."
         )
         return diagnose(self, record, "certain", evidence, fix)
 
